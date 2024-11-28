@@ -1,1 +1,25 @@
-{"step":"","data":[{"text":"Привет","answers":[{"type":"text","content":"Здорова","caption":""}]}]}
+{
+  "step": "",
+  "data": [
+    {
+      "text": "Привет",
+      "answers": [
+        {
+          "type": "text",
+          "content": "Здорова",
+          "caption": ""
+        }
+      ]
+    },
+    {
+      "text": "Привет",
+      "answers": [
+        {
+          "type": "text",
+          "content": "",
+          "caption": ""
+        }
+      ]
+    }
+  ]
+}
