@@ -1,294 +1,414 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
-	"github.com/joho/godotenv"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-type Update struct {
-	UpdateID int `json:"update_id"`
-	Message  struct {
-		Chat struct {
-			ID   int64  `json:"id"`
-			Type string `json:"type"`
-		} `json:"chat"`
-		Text string `json:"text"`
-	} `json:"message"`
-}
-
-type UpdatesResponse struct {
-	Ok     bool     `json:"ok"`
-	Result []Update `json:"result"`
-}
-
-type AutoReply struct {
-	Trigger  string `json:"trigger"`
-	Response string `json:"response"`
-}
-
-var (
-	filename    = "db.json"
-	adminID     int64 // ID администратора, задайте позже
-	botToken    string
-	autoReplies []AutoReply
+// Замените на ваш токен бота и ID администратора
+const (
+	BotToken = "8130389933:AAF6UbNo6KYCF3mQiK-1T2dsfIiMdlvUaTI" // Замените на ваш токен бота
+	AdminID  = 575225733                                        // Замените на ваш Telegram user ID
 )
+
+// Структуры для базы данных
+type Answer struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+	Caption string `json:"caption"`
+}
+
+type DataItem struct {
+	Text    string   `json:"text"`
+	Answers []Answer `json:"answers"`
+}
+
+type Database struct {
+	Step string     `json:"step"`
+	Data []DataItem `json:"data"`
+}
+
+// Структуры для бизнес-сообщений
+type BusinessMessage struct {
+	MessageID            int                       `json:"message_id"`
+	From                 *tgbotapi.User            `json:"from"`
+	BusinessConnectionID int64                     `json:"business_connection_id"`
+	Chat                 *tgbotapi.Chat            `json:"chat"`
+	Date                 int                       `json:"date"`
+	Text                 string                    `json:"text"`
+	Entities             *[]tgbotapi.MessageEntity `json:"entities,omitempty"`
+	Caption              string                    `json:"caption,omitempty"`
+	// Добавьте другие необходимые поля, если нужно
+}
+
+// Кастомная структура обновления
+type CustomUpdate struct {
+	UpdateID        int               `json:"update_id"`
+	Message         *tgbotapi.Message `json:"message,omitempty"`
+	BusinessMessage *BusinessMessage  `json:"business_message,omitempty"`
+}
+
+// Функции для загрузки и сохранения базы данных
+func loadDatabase() (*Database, error) {
+	db := &Database{}
+	file, err := ioutil.ReadFile("db.json")
+	if err != nil {
+		if os.IsNotExist(err) {
+			db.Step = ""
+			db.Data = []DataItem{}
+			return db, nil
+		}
+		return nil, err
+	}
+	err = json.Unmarshal(file, db)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+func saveDatabase(db *Database) error {
+	data, err := json.Marshal(db)
+	if err != nil {
+		return err
+	}
+	err = ioutil.WriteFile("db.json", data, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
 func main() {
-	// Загружаем переменные окружения
-	err := godotenv.Load("bot.env")
+	bot, err := tgbotapi.NewBotAPI(BotToken)
 	if err != nil {
-		log.Fatal("Ошибка загрузки переменных окружения:", err)
+		log.Fatal(err)
 	}
 
-	botToken = os.Getenv("TOKEN")
-	if botToken == "" {
-		log.Fatal("Токен бота не установлен.")
-	}
+	bot.Debug = true
 
-	adminID = parseAdminID()
+	log.Printf("Authorized on account %s", bot.Self.UserName)
 
-	autoReplies, err = loadAutoReplies(filename)
+	// Установка вебхука
+	// Замените на ваш актуальный ngrok URL
+	webhookURL := "https://a13a-91-207-171-60.ngrok-free.app/" + bot.Token
+
+	wh, err := tgbotapi.NewWebhook(webhookURL)
 	if err != nil {
-		log.Fatalf("Ошибка загрузки автоответов: %v", err)
+		log.Fatal(err)
 	}
 
-	offset := 0
-	for {
-		updates, err := getUpdates(offset)
+	_, err = bot.Request(wh)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	info, err := bot.GetWebhookInfo()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if info.LastErrorDate != 0 {
+		log.Printf("Telegram callback failed: %s", info.LastErrorMessage)
+	}
+
+	updates := bot.ListenForWebhook("/" + bot.Token)
+
+	// Запускаем сервер без TLS
+	go func() {
+		err = http.ListenAndServe(":8443", nil)
 		if err != nil {
-			log.Printf("Ошибка получения обновлений: %s", err)
+			log.Fatal(err)
+		}
+	}()
+
+	log.Println("Start listening for updates...")
+
+	for update := range updates {
+		// Преобразуем обновление в JSON и обратно, чтобы захватить BusinessMessage
+		rawData, err := json.Marshal(update)
+		if err != nil {
+			log.Println("Ошибка сериализации обновления:", err)
 			continue
 		}
 
-		for _, update := range updates {
-			log.Printf("Обрабатываю сообщение ID: %d, Текст: %s", update.UpdateID, update.Message.Text)
+		var customUpdate CustomUpdate
+		err = json.Unmarshal(rawData, &customUpdate)
+		if err != nil {
+			log.Println("Ошибка десериализации обновления:", err)
+			continue
+		}
 
-			// Автоответ
-			for _, reply := range autoReplies {
-				if strings.EqualFold(update.Message.Text, reply.Trigger) {
-					log.Printf("Триггер найден: %s. Отправляю ответ: %s", reply.Trigger, reply.Response)
-					err := sendMessage(update.Message.Chat.ID, reply.Response)
-					if err != nil {
-						log.Printf("Ошибка отправки сообщения: %s", err)
-					}
+		handleUpdate(bot, &customUpdate)
+	}
+}
+
+// Обработка обновлений
+func handleUpdate(bot *tgbotapi.BotAPI, update *CustomUpdate) {
+	db, err := loadDatabase()
+	if err != nil {
+		log.Println("Ошибка загрузки базы данных:", err)
+		return
+	}
+
+	// Обработка сообщений от администратора
+	if update.Message != nil && update.Message.From.ID == AdminID {
+		handleAdminMessage(bot, update.Message, db)
+	}
+
+	// Обработка бизнес-сообщений
+	if update.BusinessMessage != nil && update.BusinessMessage.BusinessConnectionID != 0 {
+		handleBusinessMessage(bot, update.BusinessMessage, db)
+	}
+}
+
+// Функция обработки сообщений от администратора
+func handleAdminMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, db *Database) {
+	chatID := message.Chat.ID
+	text := message.Text
+
+	// Определение клавиатур
+	homeKeyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("Add auto reply ✉️"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("remove auto reply 🚫"),
+		),
+	)
+	homeKeyboard.ResizeKeyboard = true
+
+	backKeyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("Back 🔙"),
+		),
+	)
+	backKeyboard.ResizeKeyboard = true
+
+	doneKeyboard := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("Done!"),
+		),
+	)
+	doneKeyboard.ResizeKeyboard = true
+
+	// Обработка команд и шагов
+	switch text {
+	case "/start":
+		msg := tgbotapi.NewMessage(chatID, "Привет! Добро пожаловать в бот-менеджер бизнес-аккаунта! 🤖\n\nЧтобы использовать бота, перейдите в раздел бизнес-аккаунта в вашем профиле Telegram, выберите раздел чат-бота и введите имя пользователя бота. 💼\n\nПримечание: Только премиум пользователи могут использовать эту опцию. ℹ️")
+		msg.ReplyMarkup = homeKeyboard
+		bot.Send(msg)
+		db.Step = ""
+		saveDatabase(db)
+	case "Back 🔙", "Done!":
+		msg := tgbotapi.NewMessage(chatID, "Вы вернулись в главное меню.")
+		msg.ReplyMarkup = homeKeyboard
+		bot.Send(msg)
+		db.Step = ""
+		saveDatabase(db)
+	case "Add auto reply ✉️":
+		msg := tgbotapi.NewMessage(chatID, "Чтобы установить автоответ, введите сообщение, на которое бот должен отвечать (на следующем шаге вы отправите ответ на этот текст)")
+		msg.ReplyMarkup = backKeyboard
+		bot.Send(msg)
+		db.Step = "add-1"
+		saveDatabase(db)
+	case "remove auto reply 🚫":
+		if len(db.Data) > 0 {
+			var list strings.Builder
+			for _, item := range db.Data {
+				list.WriteString(fmt.Sprintf("<code>%s</code>\n---\n", item.Text))
+			}
+			msg1 := tgbotapi.NewMessage(chatID, list.String())
+			msg1.ParseMode = "HTML"
+			bot.Send(msg1)
+
+			msg2 := tgbotapi.NewMessage(chatID, "Чтобы удалить элемент из автоответов, скопируйте и вставьте один из вышеперечисленных")
+			msg2.ReplyMarkup = backKeyboard
+			bot.Send(msg2)
+
+			db.Step = "remove"
+			saveDatabase(db)
+		} else {
+			msg := tgbotapi.NewMessage(chatID, "Список автоответов пуст!")
+			msg.ReplyMarkup = homeKeyboard
+			bot.Send(msg)
+		}
+	default:
+		// Обработка шагов
+		switch db.Step {
+		case "add-1":
+			// Сохранение триггерного текста
+			newItem := DataItem{
+				Text:    text,
+				Answers: []Answer{},
+			}
+			db.Data = append(db.Data, newItem)
+			db.Step = "add-2"
+			saveDatabase(db)
+
+			msg := tgbotapi.NewMessage(chatID, "✅ Успешно создано.\n\nОтправьте контент для ответа на этот текст (может включать любой тип контента: текст, фото, видео, GIF, стикер, голосовое сообщение и т.д.)")
+			msg.ReplyMarkup = backKeyboard
+			bot.Send(msg)
+		case "add-2":
+			// Получение последнего элемента
+			if len(db.Data) == 0 {
+				db.Step = ""
+				saveDatabase(db)
+				return
+			}
+			lastIndex := len(db.Data) - 1
+			lastItem := &db.Data[lastIndex]
+
+			// Проверка типа сообщения и сохранение ответа
+			var answer Answer
+			if message.Text != "" {
+				answer.Type = "text"
+				answer.Content = message.Text
+			} else if message.Sticker != nil {
+				answer.Type = "sticker"
+				answer.Content = message.Sticker.FileID
+			} else if message.Photo != nil {
+				photo := message.Photo[len(message.Photo)-1]
+				answer.Type = "photo"
+				answer.Content = photo.FileID
+			} else if message.Video != nil {
+				answer.Type = "video"
+				answer.Content = message.Video.FileID
+			} else if message.Voice != nil {
+				answer.Type = "voice"
+				answer.Content = message.Voice.FileID
+			} else if message.Document != nil {
+				answer.Type = "file"
+				answer.Content = message.Document.FileID
+			} else if message.Audio != nil {
+				answer.Type = "music"
+				answer.Content = message.Audio.FileID
+			} else if message.Animation != nil {
+				answer.Type = "animation"
+				answer.Content = message.Animation.FileID
+			} else if message.VideoNote != nil {
+				answer.Type = "video_note"
+				answer.Content = message.VideoNote.FileID
+			}
+
+			if message.Caption != "" {
+				answer.Caption = message.Caption
+			}
+
+			if answer.Type != "" {
+				lastItem.Answers = append(lastItem.Answers, answer)
+				saveDatabase(db)
+
+				msg := tgbotapi.NewMessage(chatID, "✅ Ответ был добавлен к вашему тексту\n\nВы можете отправить больше контента или нажать 'Done!'")
+				msg.ReplyMarkup = doneKeyboard
+				bot.Send(msg)
+			} else {
+				msg := tgbotapi.NewMessage(chatID, "Возникла проблема с отправленным вами контентом, пожалуйста, отправьте другой контент")
+				msg.ReplyMarkup = doneKeyboard
+				bot.Send(msg)
+			}
+		case "remove":
+			// Удаление указанного элемента
+			removed := false
+			for i, item := range db.Data {
+				if item.Text == text {
+					db.Data = append(db.Data[:i], db.Data[i+1:]...)
+					removed = true
 					break
 				}
 			}
-		}
-
-		if len(updates) > 0 {
-			offset = updates[len(updates)-1].UpdateID + 1
+			if removed {
+				saveDatabase(db)
+				msg := tgbotapi.NewMessage(chatID, "✅ Успешно удалено")
+				msg.ReplyMarkup = homeKeyboard
+				bot.Send(msg)
+			} else {
+				msg := tgbotapi.NewMessage(chatID, "Указанный элемент не найден")
+				msg.ReplyMarkup = backKeyboard
+				bot.Send(msg)
+			}
+			db.Step = ""
+			saveDatabase(db)
+		default:
+			// Ничего не делать
 		}
 	}
 }
 
-func parseAdminID() int64 {
-	admin := os.Getenv("ADMIN_ID")
-	if admin == "" {
-		log.Fatal("ADMIN_ID не установлен в .env файле.")
-	}
+// Функция обработки бизнес-сообщений
+func handleBusinessMessage(bot *tgbotapi.BotAPI, bMessage *BusinessMessage, db *Database) {
+	bText := bMessage.Text
+	bChatID := bMessage.Chat.ID
+	bID := strconv.FormatInt(bMessage.BusinessConnectionID, 10)
+	bMessageID := strconv.Itoa(bMessage.MessageID)
 
-	var id int64
-	_, err := fmt.Sscanf(admin, "%d", &id)
-	if err != nil {
-		log.Fatal("ADMIN_ID должен быть числом.")
-	}
-
-	return id
-}
-
-func processUpdate(update Update) {
-	chatID := update.Message.Chat.ID
-	text := update.Message.Text
-
-	// Обработка команд администратора
-	if chatID == adminID {
-		handleAdminCommands(chatID, text)
-		return
-	}
-
-	// Обработка автоответов для других пользователей
-	if update.Message.Chat.Type == "private" {
-		for _, reply := range autoReplies {
-			if strings.EqualFold(reply.Trigger, text) {
-				sendMessage(chatID, reply.Response)
-				break
+	for _, item := range db.Data {
+		if item.Text == bText {
+			for index, answer := range item.Answers {
+				params := url.Values{}
+				params.Add("chat_id", strconv.FormatInt(bChatID, 10))
+				params.Add("business_connection_id", bID)
+				params.Add("parse_mode", "HTML")
+				params.Add("disable_web_page_preview", "true")
+				if index == 0 {
+					params.Add("reply_to_message_id", bMessageID)
+				}
+				if answer.Caption != "" {
+					params.Add("caption", answer.Caption)
+				}
+				switch answer.Type {
+				case "text":
+					params.Add("text", answer.Content)
+					sendBotAPIRequest(BotToken, "sendMessage", params)
+				case "sticker":
+					params.Add("sticker", answer.Content)
+					sendBotAPIRequest(BotToken, "sendSticker", params)
+				case "photo":
+					params.Add("photo", answer.Content)
+					sendBotAPIRequest(BotToken, "sendPhoto", params)
+				case "video":
+					params.Add("video", answer.Content)
+					sendBotAPIRequest(BotToken, "sendVideo", params)
+				case "voice":
+					params.Add("voice", answer.Content)
+					sendBotAPIRequest(BotToken, "sendVoice", params)
+				case "file":
+					params.Add("document", answer.Content)
+					sendBotAPIRequest(BotToken, "sendDocument", params)
+				case "music":
+					params.Add("audio", answer.Content)
+					sendBotAPIRequest(BotToken, "sendAudio", params)
+				case "animation":
+					params.Add("animation", answer.Content)
+					sendBotAPIRequest(BotToken, "sendAnimation", params)
+				case "video_note":
+					params.Add("video_note", answer.Content)
+					sendBotAPIRequest(BotToken, "sendVideoNote", params)
+				}
 			}
 		}
 	}
 }
 
-func handleAdminCommands(chatID int64, text string) {
-	switch text {
-	case "/start":
-		sendMessageWithButtons(chatID, "Добро пожаловать! Выберите действие:", [][]string{
-			{"Add auto reply ✉️", "Remove auto reply 🚫"},
-		})
-	case "Add auto reply ✉️":
-		sendMessage(chatID, "Введите триггер для автоответа:")
-	case "Remove auto reply 🚫":
-		listAutoReplies(chatID)
-	default:
-		if strings.HasPrefix(text, "REMOVE:") {
-			trigger := strings.TrimPrefix(text, "REMOVE:")
-			removeAutoReply(chatID, strings.TrimSpace(trigger))
-		} else {
-			addAutoReply(chatID, text)
-		}
-	}
-}
-
-func sendMessage(chatID int64, text string) error {
-	params := map[string]interface{}{
-		"chat_id": chatID,
-		"text":    text,
-	}
-	_, err := callTelegramAPI("sendMessage", params)
-	return err
-}
-
-func sendMessageWithButtons(chatID int64, text string, buttons [][]string) {
-	keyboard := map[string]interface{}{
-		"keyboard":          buttons,
-		"resize_keyboard":   true,
-		"one_time_keyboard": true,
-	}
-
-	params := map[string]interface{}{
-		"chat_id":      chatID,
-		"text":         text,
-		"reply_markup": keyboard,
-	}
-
-	_, err := callTelegramAPI("sendMessage", params)
+// Функция отправки запросов к API Telegram
+func sendBotAPIRequest(token, method string, params url.Values) {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", token, method)
+	resp, err := http.PostForm(apiURL, params)
 	if err != nil {
-		log.Println("Ошибка отправки сообщения с кнопками:", err)
-	}
-}
-
-func listAutoReplies(chatID int64) {
-	if len(autoReplies) == 0 {
-		sendMessage(chatID, "Список автоответов пуст.")
+		log.Println("Ошибка отправки запроса:", err)
 		return
-	}
-
-	var list string
-	for _, reply := range autoReplies {
-		list += fmt.Sprintf("Trigger: %s\nResponse: %s\n\n", reply.Trigger, reply.Response)
-	}
-
-	sendMessage(chatID, list+"\nЧтобы удалить, отправьте: REMOVE:<trigger>")
-}
-
-func addAutoReply(chatID int64, text string) {
-	if len(autoReplies) > 0 {
-		last := &autoReplies[len(autoReplies)-1]
-		if last.Response == "" {
-			last.Response = text
-			saveAutoReplies()
-			sendMessage(chatID, "Автоответ успешно добавлен!")
-			return
-		}
-	}
-
-	autoReplies = append(autoReplies, AutoReply{Trigger: text})
-	sendMessage(chatID, "Введите ответ на этот триггер.")
-}
-
-func removeAutoReply(chatID int64, trigger string) {
-	for i, reply := range autoReplies {
-		if strings.EqualFold(reply.Trigger, trigger) {
-			autoReplies = append(autoReplies[:i], autoReplies[i+1:]...)
-			saveAutoReplies()
-			sendMessage(chatID, "Автоответ успешно удалён!")
-			return
-		}
-	}
-
-	sendMessage(chatID, "Триггер не найден.")
-}
-
-func loadAutoReplies(filename string) ([]AutoReply, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	var replies []AutoReply
-	err = json.Unmarshal(data, &replies)
-	return replies, err
-}
-
-func saveAutoReplies() {
-	data, err := json.Marshal(autoReplies)
-	if err != nil {
-		log.Println("Ошибка сохранения автоответов:", err)
-		return
-	}
-
-	err = os.WriteFile(filename, data, 0644)
-	if err != nil {
-		log.Println("Ошибка записи автоответов в файл:", err)
-	}
-}
-
-func getUpdates(offset int) ([]Update, error) {
-	params := map[string]string{
-		"offset": fmt.Sprintf("%d", offset),
-		"limit":  "5",
-	}
-
-	response, err := callTelegramAPI("getUpdates", params)
-	if err != nil {
-		return nil, err
-	}
-
-	var updatesResponse UpdatesResponse
-	err = json.Unmarshal(response, &updatesResponse)
-	if err != nil {
-		return nil, err
-	}
-
-	return updatesResponse.Result, nil
-}
-
-func callTelegramAPI(method string, params interface{}) ([]byte, error) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", botToken, method)
-
-	data, err := json.Marshal(params)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка сериализации параметров: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(data))
-	if err != nil {
-		return nil, fmt.Errorf("ошибка создания запроса: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка выполнения запроса: %w", err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка чтения ответа: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ошибка API Telegram: %s", body)
-	}
-
-	return body, nil
+	body, _ := ioutil.ReadAll(resp.Body)
+	// Здесь можно добавить обработку ошибок, проверив ответ
+	log.Println("Ответ:", string(body))
 }
