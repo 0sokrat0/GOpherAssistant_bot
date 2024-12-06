@@ -20,7 +20,7 @@ type AppConfig struct {
 	Id        string `yaml:"id" env:"APP_ID"`
 	Name      string `yaml:"name" env:"APP_NAME"`
 	LogLevel  string `yaml:"logLevel" env:"LOG_LEVEL"`
-	IsLogJSON string `yaml:"is_log_json" env:"IS_LOG_JSON"`
+	IsLogJSON bool   `yaml:"is_log_json" env:"IS_LOG_JSON"`
 }
 
 type BotConfig struct {
@@ -60,14 +60,14 @@ func GetConfig() *Config {
 			configPath = path
 		}
 
-		if err := cleanenv.ReadConfig(configPath, instance); err != nil {
-			description, err := cleanenv.GetDescription(instance, nil)
-			if err != nil {
-				panic(err)
+		if readErr := cleanenv.ReadConfig(configPath, instance); readErr != nil {
+			description, descrErr := cleanenv.GetDescription(instance, nil)
+			if descrErr != nil {
+				panic(descrErr)
 			}
 
 			slog.Info(description)
-			slog.Error("failed to read config", slog.String("err", err.Error()),
+			slog.Error("failed to read config", slog.String("err", readErr.Error()),
 				slog.String("path", configPath),
 			)
 			os.Exit(1)
