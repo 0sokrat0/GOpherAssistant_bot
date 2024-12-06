@@ -12,6 +12,7 @@ import (
 type Config struct {
 	App     AppConfig     `yaml:"app"`
 	Bot     BotConfig     `yaml:"bot"`
+	OpenAi  OpenAiConfig  `yaml:"openai"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Tracing TracingConfig `yaml:"tracing"`
 }
@@ -25,6 +26,11 @@ type AppConfig struct {
 
 type BotConfig struct {
 	Token string `yaml:"token" env:"BOT_TOKEN"`
+}
+
+type OpenAiConfig struct {
+	Enabled bool   `yaml:"enabled" env:"OPENAI_ENABLED"`
+	ApiKey  string `yaml:"api_key" env:"OPENAI_API_KEY"`
 }
 
 type MetricsConfig struct {

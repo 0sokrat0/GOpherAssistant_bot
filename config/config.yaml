@@ -1,0 +1,23 @@
+app:
+  id: 1
+  name: GopherAssistant_bot
+  log_level: debug
+  is_log_json: false
+
+
+bot:
+  token: "8130389933:AAGdMGjRpoLoVjhy_i2WLwPJ7tr3F-_kxYk"
+
+openai:
+  api_key: ""
+
+metrics:
+  enabled: false
+  host: ""
+  port: 0
+
+tracing:
+  enabled: false
+  host: ""
+  port: 0
+
