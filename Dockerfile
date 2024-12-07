@@ -1,20 +1,23 @@
 # Используем официальный образ Go
 FROM golang:1.23.4-alpine
 
-# Устанавливаем рабочую директорию
+# Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
 
-# Копируем файлы проекта
-COPY . .
+# Копируем `go.mod` и `go.sum` для загрузки зависимостей
+COPY app/go.mod app/go.sum ./
 
-# Загружаем зависимости
-RUN go mod tidy
+# Устанавливаем зависимости
+RUN go mod download
 
-# Собираем бинарный файл
-RUN go build -o bot .
+# Копируем весь код проекта
+COPY app ./
 
-# Указываем переменные среды
-ENV BOT_TOKEN=8130389933:AAGdMGjRpoLoVjhy_i2WLwPJ7tr3F-_kxYk
+# Собираем приложение
+RUN go build -o gopher-assistant-bot ./cmd/main.go
+
+# Указываем порт, который будет слушать приложение
+EXPOSE 8080
 
 # Запускаем приложение
-CMD ["./bot"]
+CMD ["./gopher-assistant-bot"]
