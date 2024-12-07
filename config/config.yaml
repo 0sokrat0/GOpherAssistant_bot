@@ -1,15 +1,16 @@
 app:
   id: 1
   name: GopherAssistant_bot
-  log_level: debug
-  is_log_json: false
-
+  log_level: info
+  is_log_json: true
 
 bot:
-  token: "8130389933:AAGdMGjRpoLoVjhy_i2WLwPJ7tr3F-_kxYk"
+  token: ""
+  timeout: 1s
 
-openai:
-  api_key: ""
+gpt4all:
+  token: "g4a-oAVXy88GW5d4n5FvstCoyi5wBjPPDCE6Fif" # Токен GPT4All
+  url: "https://api.gpt4-all.xyz/v1"             # URL API GPT4All
 
 metrics:
   enabled: false
@@ -20,4 +21,3 @@ tracing:
   enabled: false
   host: ""
   port: 0
-

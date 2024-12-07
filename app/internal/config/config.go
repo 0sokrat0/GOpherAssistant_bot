@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
 )
@@ -12,7 +13,7 @@ import (
 type Config struct {
 	App     AppConfig     `yaml:"app"`
 	Bot     BotConfig     `yaml:"bot"`
-	OpenAi  OpenAiConfig  `yaml:"openai"`
+	GPT4All GPT4AllConfig `yaml:"gpt4all"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Tracing TracingConfig `yaml:"tracing"`
 }
@@ -25,12 +26,13 @@ type AppConfig struct {
 }
 
 type BotConfig struct {
-	Token string `yaml:"token" env:"BOT_TOKEN"`
+	Token   string        `yaml:"token" env:"BOT_TOKEN"`
+	Timeout time.Duration `yaml:"timeout" env:"BOT_TIMEOUT"`
 }
 
-type OpenAiConfig struct {
-	Enabled bool   `yaml:"enabled" env:"OPENAI_ENABLED"`
-	ApiKey  string `yaml:"api_key" env:"OPENAI_API_KEY"`
+type GPT4AllConfig struct {
+	Token string `yaml:"token" env:"GPT4_ALL_TOKEN"`
+	URL   string `yaml:"url" env:"GPT4_ALL_URL"`
 }
 
 type MetricsConfig struct {
@@ -56,7 +58,6 @@ var (
 )
 
 func GetConfig() *Config {
-
 	once.Do(func() {
 		var configPath string
 		flag.StringVar(&configPath, flagConfigPathName, "", "path to config file")
@@ -65,6 +66,8 @@ func GetConfig() *Config {
 		if path, ok := os.LookupEnv(envConfigPathName); ok {
 			configPath = path
 		}
+
+		instance = &Config{}
 
 		if readErr := cleanenv.ReadConfig(configPath, instance); readErr != nil {
 			description, descrErr := cleanenv.GetDescription(instance, nil)
@@ -78,8 +81,6 @@ func GetConfig() *Config {
 			)
 			os.Exit(1)
 		}
-
-		instance = &Config{}
 	})
 
 	return instance
