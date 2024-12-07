@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	tb "gopkg.in/telebot.v4"
@@ -51,8 +52,10 @@ func (w *Wrapper) Start(_ context.Context) error {
 
 // setupHandlers настраивает обработчики событий.
 func (w *Wrapper) setupHandlers() {
+	// Меню с кнопками
 	menu := &tb.ReplyMarkup{}
-	btnGPT := menu.Data("💬 ChatGPT", "gpt_callback")
+	btnGPT := menu.Data("💬 ChatGPT", "chat_gpt")
+	btnBack := menu.Data("⬅️ Назад", "back")
 
 	menu.Inline(
 		menu.Row(btnGPT),
@@ -60,7 +63,17 @@ func (w *Wrapper) setupHandlers() {
 
 	// Обработчик команды /start
 	w.bot.Handle("/start", func(c tb.Context) error {
-		return c.Send("Меня зовут Гоша! Выберите действие:", &tb.SendOptions{
+		message := "Привет! Меня зовут Гоша, ваш личный ассистент. Давайте начнём!"
+		stickerID := "CAACAgIAAxkBAAENSmpnVLOt0C0CvGTQByda2SQiIJK4-gACqRcAAtoIAUn-P0sCoVKCnzYE" // Пример FileID
+
+		// Отправляем стикер
+		sticker := &tb.Sticker{File: tb.File{FileID: stickerID}}
+		if err := c.Send(sticker); err != nil {
+			return fmt.Errorf("Ошибка отправки стикера: %w", err)
+		}
+
+		// Отправляем сообщение с кнопками
+		return c.Send(message, &tb.SendOptions{
 			ReplyMarkup: menu,
 			ParseMode:   tb.ModeMarkdown,
 		})
@@ -73,6 +86,10 @@ func (w *Wrapper) setupHandlers() {
 		// Устанавливаем состояние ожидания текста
 		w.setState(userID, "awaiting_text")
 
+		// Кнопка "Назад"
+		backMenu := &tb.ReplyMarkup{}
+		backMenu.Inline(backMenu.Row(btnBack))
+
 		// Подтверждаем нажатие кнопки
 		if err := c.Respond(&tb.CallbackResponse{
 			Text: "Введите текст для ChatGPT.",
@@ -81,19 +98,31 @@ func (w *Wrapper) setupHandlers() {
 		}
 
 		// Сообщаем пользователю, что ожидается ввод текста
-		return c.Send("Теперь введите текст, который вы хотите отправить ChatGPT.")
+		return c.Send("Теперь введите текст, который вы хотите отправить ChatGPT.", &tb.SendOptions{
+			ReplyMarkup: backMenu,
+		})
+	})
+
+	// Обработчик кнопки "Назад"
+	w.bot.Handle(&btnBack, func(c tb.Context) error {
+		userID := c.Sender().ID
+
+		// Сбрасываем состояние
+		w.setState(userID, "")
+
+		// Возвращаем главное меню
+		return c.Send("Вы вернулись в главное меню. Выберите действие:", &tb.SendOptions{
+			ReplyMarkup: menu,
+		})
 	})
 
 	// Обработчик текстовых сообщений
 	w.bot.Handle(tb.OnText, func(c tb.Context) error {
 		userID := c.Sender().ID
 
-		// Проверяем, находится ли пользователь в состоянии ожидания текста
+		// Проверяем состояние пользователя
 		if w.getState(userID) == "awaiting_text" {
-			// Сбрасываем состояние
-			w.setState(userID, "")
-
-			// Передаем текст для обработки ChatGPT
+			// Обрабатываем текст через ChatGPT
 			return w.handleText(c)
 		}
 
@@ -102,6 +131,7 @@ func (w *Wrapper) setupHandlers() {
 	})
 }
 
+// handleText обрабатывает текстовые запросы для ChatGPT.
 func (w *Wrapper) handleText(c tb.Context) error {
 	txt := c.Text()
 
@@ -112,11 +142,11 @@ func (w *Wrapper) handleText(c tb.Context) error {
 		return c.Send("Ошибка при обработке запроса.")
 	}
 
-	// Форматирование ответа
-	formattedResponse := formatGPTResponse(response, true) // true для MarkdownV2
+	// Форматируем ответ
+	formattedResponse := formatResponse(response)
 
-	// Отправляем ответ
-	return c.Send(formattedResponse, tb.ModeMarkdownV2)
+	// Отправляем сообщение
+	return sendLongMessage(c, formattedResponse)
 }
 
 // Управление состояниями пользователей

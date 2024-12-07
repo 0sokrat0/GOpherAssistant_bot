@@ -1,92 +1,12 @@
 package bot
 
 import (
-	"fmt"
+	tb "gopkg.in/telebot.v4"
 	"regexp"
 	"strings"
 )
 
-// Регулярные выражения для распознавания форматов
-var (
-	codeBlockRegex = regexp.MustCompile("(?s)```(.*?)```")          // Кодовые блоки
-	listRegex      = regexp.MustCompile(`(?m)^(?:\*|-|\d+\.)\s+.*`) // Списки
-	headingRegex   = regexp.MustCompile(`(?m)^#{1,6}\s+.*`)         // Заголовки
-	quoteRegex     = regexp.MustCompile(`(?m)^>.*`)                 // Цитаты
-	linkRegex      = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)  // Ссылки
-)
-
-func formatGPTResponse(response string, useMarkdownV2 bool) string {
-	var result strings.Builder
-	lastIndex := 0
-
-	// Форматирование блоков кода
-	matches := codeBlockRegex.FindAllStringSubmatchIndex(response, -1)
-	for _, match := range matches {
-		// Текст перед блоком кода
-		if lastIndex < match[0] {
-			plainText := response[lastIndex:match[0]]
-			result.WriteString(formatText(plainText, useMarkdownV2))
-		}
-
-		// Форматируем блок кода
-		codeBlock := response[match[2]:match[3]]
-		result.WriteString(formatCodeBlock(codeBlock, useMarkdownV2))
-
-		lastIndex = match[1]
-	}
-
-	// Оставшийся текст после последнего блока кода
-	if lastIndex < len(response) {
-		plainText := response[lastIndex:]
-		result.WriteString(formatText(plainText, useMarkdownV2))
-	}
-
-	return result.String()
-}
-
-func formatText(text string, useMarkdownV2 bool) string {
-	if useMarkdownV2 {
-		return escapeMarkdownV2(strings.TrimSpace(text)) + "\n"
-	}
-	return strings.TrimSpace(text) + "\n"
-}
-
-func formatCodeBlock(code string, useMarkdownV2 bool) string {
-	if useMarkdownV2 {
-		return "```\n" + escapeMarkdownV2(strings.TrimSpace(code)) + "\n```\n"
-	}
-	return "```\n" + strings.TrimSpace(code) + "\n```\n"
-}
-
-func formatList(text string, useMarkdownV2 bool) string {
-	lines := strings.Split(text, "\n")
-	var result strings.Builder
-
-	for _, line := range lines {
-		if useMarkdownV2 {
-			result.WriteString("- " + escapeMarkdownV2(strings.TrimSpace(line)) + "\n")
-		} else {
-			result.WriteString("- " + strings.TrimSpace(line) + "\n")
-		}
-	}
-
-	return result.String()
-}
-
-func formatHeading(text string, useMarkdownV2 bool) string {
-	if useMarkdownV2 {
-		return "*_" + escapeMarkdownV2(strings.TrimSpace(text)) + "_*\n"
-	}
-	return strings.TrimSpace(text) + "\n"
-}
-
-func formatLink(match []string, useMarkdownV2 bool) string {
-	if useMarkdownV2 {
-		return fmt.Sprintf("[%s](%s)", escapeMarkdownV2(match[1]), escapeMarkdownV2(match[2]))
-	}
-	return fmt.Sprintf("[%s](%s)", match[1], match[2])
-}
-
+// Экранирование текста для MarkdownV2
 func escapeMarkdownV2(text string) string {
 	return strings.NewReplacer(
 		"_", "\\_",
@@ -95,9 +15,7 @@ func escapeMarkdownV2(text string) string {
 		"]", "\\]",
 		"(", "\\(",
 		")", "\\)",
-		"~", "\\~",
 		"`", "\\`",
-		">", "\\>",
 		"#", "\\#",
 		"+", "\\+",
 		"-", "\\-",
@@ -108,4 +26,60 @@ func escapeMarkdownV2(text string) string {
 		".", "\\.",
 		"!", "\\!",
 	).Replace(text)
+}
+
+// Регулярное выражение для блоков кода
+var codeBlockRegex = regexp.MustCompile("(?s)```(.*?)```")
+
+func formatResponse(response string) string {
+	var result strings.Builder
+	lastIndex := 0
+
+	// Ищем блоки кода
+	matches := codeBlockRegex.FindAllStringSubmatchIndex(response, -1)
+	for _, match := range matches {
+		// Добавляем текст перед кодом
+		if lastIndex < match[0] {
+			plainText := response[lastIndex:match[0]]
+			result.WriteString(escapeMarkdownV2(plainText))
+		}
+
+		// Добавляем код в формате Markdown
+		codeBlock := response[match[2]:match[3]]
+		result.WriteString("```\n" + strings.TrimSpace(codeBlock) + "\n```\n")
+
+		lastIndex = match[1]
+	}
+
+	// Добавляем оставшийся текст после последнего блока кода
+	if lastIndex < len(response) {
+		plainText := response[lastIndex:]
+		result.WriteString(escapeMarkdownV2(plainText))
+	}
+
+	return result.String()
+}
+
+func splitMessage(msg string, limit int) []string {
+	var parts []string
+	for len(msg) > limit {
+		splitIndex := strings.LastIndex(msg[:limit], "\n")
+		if splitIndex == -1 {
+			splitIndex = limit
+		}
+		parts = append(parts, msg[:splitIndex])
+		msg = msg[splitIndex:]
+	}
+	parts = append(parts, msg)
+	return parts
+}
+
+func sendLongMessage(c tb.Context, message string) error {
+	parts := splitMessage(message, 4000) // Telegram позволяет до 4096 символов
+	for _, part := range parts {
+		if err := c.Send(part, tb.ModeMarkdownV2); err != nil {
+			return err
+		}
+	}
+	return nil
 }
